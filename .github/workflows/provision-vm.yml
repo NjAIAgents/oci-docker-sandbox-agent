@@ -1,0 +1,260 @@
+name: Provision OCI VM
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  provision:
+    name: Provision VM.Standard.A1.Flex
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ── 2. Install Terraform ──────────────────────────────────────────────────
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.7"
+          terraform_wrapper: false
+
+      # ── 3. Install OCI CLI ────────────────────────────────────────────────────
+      - name: Install OCI CLI
+        run: |
+          curl -sL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh \
+            | bash -s -- --accept-all-defaults
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "$HOME/lib/oracle-cli/bin" >> "$GITHUB_PATH"
+
+      # ── 4. Configure OCI credentials ─────────────────────────────────────────
+      - name: Configure OCI credentials
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          key_file=${HOME}/.oci/oci_api_key.pem
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          EOF
+          chmod 600 ~/.oci/config
+        env:
+          OCI_PRIVATE_KEY:  ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_USER_OCID:    ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT:  ${{ secrets.OCI_FINGERPRINT }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_REGION:       ${{ secrets.OCI_REGION }}
+
+      # ── 5. Verify OCI auth ────────────────────────────────────────────────────
+      - name: Verify OCI connectivity
+        run: oci iam region list --output table
+        env:
+          OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+
+      # ── 6. Pre-flight: check if instance already exists ───────────────────────
+      - name: Pre-flight instance check
+        id: preflight
+        run: |
+          RAW=$(oci compute instance list \
+            --compartment-id "$OCI_COMPARTMENT_ID" \
+            --all 2>/dev/null || echo "")
+
+          if [ -z "$RAW" ]; then
+            COUNT=0
+          else
+            COUNT=$(echo "$RAW" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin).get('data', [])
+          print(sum(1 for i in data
+                    if i.get('shape') == 'VM.Standard.A1.Flex'
+                    and i.get('lifecycle-state') != 'TERMINATED'))
+          ")
+          fi
+
+          echo "instance_count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Existing non-terminated A1 instances: $COUNT"
+        env:
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+
+      # ── 7. Fetch availability domains dynamically ─────────────────────────────
+      - name: Fetch availability domains
+        if: steps.preflight.outputs.instance_count == '0'
+        id: ads
+        run: |
+          AD_JSON=$(oci iam availability-domain list \
+            --compartment-id "$OCI_TENANCY_OCID" \
+            --output json)
+
+          AD_LIST=$(echo "$AD_JSON" | python3 -c "
+          import sys, json
+          ads = [d['name'] for d in json.load(sys.stdin)['data']]
+          print(' '.join(ads))
+          ")
+
+          AD_COUNT=$(echo "$AD_JSON" | python3 -c "
+          import sys, json
+          print(len(json.load(sys.stdin)['data']))
+          ")
+
+          echo "ad_list=$AD_LIST"   >> "$GITHUB_OUTPUT"
+          echo "ad_count=$AD_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Found $AD_COUNT availability domain(s): $AD_LIST"
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+
+      # ── 8. Restore Terraform state from cache ────────────────────────────────
+      - name: Restore network state
+        if: steps.preflight.outputs.instance_count == '0'
+        uses: actions/cache@v4
+        with:
+          path: |
+            01-provision/network/.terraform
+            01-provision/network/.terraform.lock.hcl
+            01-provision/network/terraform.tfstate
+          key: oci-network-state-${{ secrets.OCI_COMPARTMENT_ID }}
+          restore-keys: oci-network-state-
+
+      - name: Restore instance state
+        if: steps.preflight.outputs.instance_count == '0'
+        uses: actions/cache@v4
+        with:
+          path: |
+            01-provision/instance/.terraform
+            01-provision/instance/.terraform.lock.hcl
+            01-provision/instance/terraform.tfstate
+          key: oci-instance-state-${{ github.run_id }}
+          restore-keys: oci-instance-state-
+
+      # ── 9. Write tfvars ───────────────────────────────────────────────────────
+      - name: Write tfvars
+        if: steps.preflight.outputs.instance_count == '0'
+        run: |
+          cat > 01-provision/network/terraform.tfvars <<EOF
+          compartment_id = "$OCI_COMPARTMENT_ID"
+          region         = "$OCI_REGION"
+          EOF
+
+          # SSH key may contain special characters — write via python to be safe
+          python3 -c "
+          import os
+          lines = [
+            'compartment_id  = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"',
+            'region          = \"' + os.environ['OCI_REGION'] + '\"',
+            'instance_ocpus  = 4',
+            'instance_memory = 24',
+            'ssh_public_key  = \"' + os.environ['SSH_PUBLIC_KEY'].strip() + '\"',
+          ]
+          open('01-provision/instance/terraform.tfvars', 'w').write('\n'.join(lines) + '\n')
+          "
+        env:
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+          OCI_REGION:         ${{ secrets.OCI_REGION }}
+          SSH_PUBLIC_KEY:     ${{ secrets.SSH_PUBLIC_KEY }}
+
+      # ── 10. Terraform init ────────────────────────────────────────────────────
+      - name: Terraform init — network
+        if: steps.preflight.outputs.instance_count == '0'
+        run: terraform -chdir=01-provision/network init
+
+      - name: Terraform init — instance
+        if: steps.preflight.outputs.instance_count == '0'
+        run: terraform -chdir=01-provision/instance init
+
+      # ── 11. Apply network (idempotent) ────────────────────────────────────────
+      - name: Apply network module
+        if: steps.preflight.outputs.instance_count == '0'
+        run: |
+          terraform -chdir=01-provision/network apply -auto-approve
+          SUBNET_ID=$(terraform -chdir=01-provision/network output -raw subnet_id)
+          echo "SUBNET_ID=$SUBNET_ID" >> "$GITHUB_ENV"
+          echo "Network ready. Subnet: $SUBNET_ID"
+
+      # ── 12. Try each AD dynamically ───────────────────────────────────────────
+      - name: Try all availability domains
+        if: steps.preflight.outputs.instance_count == '0'
+        id: instance
+        run: |
+          SUCCESS=false
+
+          for AD in ${{ steps.ads.outputs.ad_list }}; do
+            echo ""
+            echo "--- Attempting AD: $AD ---"
+
+            # Clean up any partial instance state
+            terraform -chdir=01-provision/instance destroy -auto-approve \
+              -var "availability_domain=$AD" \
+              -var "subnet_id=$SUBNET_ID" 2>&1 || true
+
+            # Attempt instance creation
+            if terraform -chdir=01-provision/instance apply -auto-approve \
+                -var "availability_domain=$AD" \
+                -var "subnet_id=$SUBNET_ID" 2>&1; then
+              echo "ad_used=$AD" >> "$GITHUB_OUTPUT"
+              SUCCESS=true
+              break
+            else
+              echo "No capacity in $AD. Trying next..."
+            fi
+          done
+
+          if [ "$SUCCESS" = "true" ]; then
+            echo "success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "success=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 13. Save Terraform state ──────────────────────────────────────────────
+      - name: Save network state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            01-provision/network/.terraform
+            01-provision/network/.terraform.lock.hcl
+            01-provision/network/terraform.tfstate
+          key: oci-network-state-${{ secrets.OCI_COMPARTMENT_ID }}
+
+      - name: Save instance state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            01-provision/instance/.terraform
+            01-provision/instance/.terraform.lock.hcl
+            01-provision/instance/terraform.tfstate
+          key: oci-instance-state-${{ github.run_id }}
+
+      # ── 14. Report result ─────────────────────────────────────────────────────
+      - name: Report success
+        if: steps.instance.outputs.success == 'true'
+        run: |
+          PUBLIC_IP=$(terraform -chdir=01-provision/instance output -raw public_ip 2>/dev/null || echo "unknown")
+          INSTANCE_ID=$(terraform -chdir=01-provision/instance output -raw instance_id 2>/dev/null || echo "unknown")
+          echo "::notice title=VM Provisioned::Public IP: $PUBLIC_IP | Instance: $INSTANCE_ID | AD: ${{ steps.instance.outputs.ad_used }}"
+          echo ""
+          echo "================================================"
+          echo "  SUCCESS — OCI VM provisioned"
+          echo "  Public IP:   $PUBLIC_IP"
+          echo "  Instance ID: $INSTANCE_ID"
+          echo "  AD:          ${{ steps.instance.outputs.ad_used }}"
+          echo "================================================"
+          echo "Add to your .env:  VM_PUBLIC_IP=$PUBLIC_IP"
+
+      - name: Report no capacity
+        if: steps.preflight.outputs.instance_count == '0' && steps.instance.outputs.success == 'false'
+        run: |
+          echo "::warning title=No capacity::All ADs had no capacity this run. Will retry in 30 minutes."
+
+      - name: Report already provisioned
+        if: steps.preflight.outputs.instance_count != '0'
+        run: |
+          echo "::notice title=Already provisioned::A1 instance already exists — skipping. Disable this workflow once your instance is running."

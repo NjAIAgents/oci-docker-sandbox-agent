@@ -42,8 +42,6 @@ jobs:
             "$OCI_USER_OCID" "$OCI_FINGERPRINT" "$HOME" "$OCI_TENANCY_OCID" "$OCI_REGION" \
             > ~/.oci/config
           chmod 600 ~/.oci/config
-          echo "--- config (secrets masked) ---"
-          sed 's/\(user\|tenancy\|fingerprint\)=.*/\1=<set>/' ~/.oci/config
         env:
           OCI_PRIVATE_KEY:  ${{ secrets.OCI_PRIVATE_KEY }}
           OCI_USER_OCID:    ${{ secrets.OCI_USER_OCID }}
@@ -108,66 +106,70 @@ jobs:
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
 
-      # ── 8. Restore Terraform state from cache ────────────────────────────────
-      - name: Restore network state
-        if: steps.preflight.outputs.instance_count == '0'
-        uses: actions/cache@v4
-        with:
-          path: |
-            01-provision/network/.terraform
-            01-provision/network/.terraform.lock.hcl
-            01-provision/network/terraform.tfstate
-          key: oci-network-state-${{ secrets.OCI_COMPARTMENT_ID }}
-          restore-keys: oci-network-state-
-
-      - name: Restore instance state
-        if: steps.preflight.outputs.instance_count == '0'
-        uses: actions/cache@v4
-        with:
-          path: |
-            01-provision/instance/.terraform
-            01-provision/instance/.terraform.lock.hcl
-            01-provision/instance/terraform.tfstate
-          key: oci-instance-state-${{ github.run_id }}
-          restore-keys: oci-instance-state-
-
-      # ── 9. Write tfvars ───────────────────────────────────────────────────────
+      # ── 8. Write tfvars ───────────────────────────────────────────────────────
       - name: Write tfvars
         if: steps.preflight.outputs.instance_count == '0'
         run: |
-          mkdir -p 01-provision/network 01-provision/instance
-          cat > 01-provision/network/terraform.tfvars <<EOF
-          compartment_id = "$OCI_COMPARTMENT_ID"
-          region         = "$OCI_REGION"
-          EOF
-
-          # SSH key may contain special characters — write via python to be safe
           python3 -c "
           import os
-          lines = [
-            'compartment_id  = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"',
-            'region          = \"' + os.environ['OCI_REGION'] + '\"',
-            'instance_ocpus  = 4',
-            'instance_memory = 24',
-            'ssh_public_key  = \"' + os.environ['SSH_PUBLIC_KEY'].strip() + '\"',
-          ]
-          open('01-provision/instance/terraform.tfvars', 'w').write('\n'.join(lines) + '\n')
+          # network tfvars
+          open('01-provision/network/terraform.tfvars', 'w').write(
+            'compartment_id = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
+            'region         = \"' + os.environ['OCI_REGION'] + '\"\n'
+          )
+          # instance tfvars
+          open('01-provision/instance/terraform.tfvars', 'w').write(
+            'compartment_id  = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
+            'region          = \"' + os.environ['OCI_REGION'] + '\"\n' +
+            'instance_ocpus  = 4\n' +
+            'instance_memory = 24\n' +
+            'ssh_public_key  = \"' + os.environ['SSH_PUBLIC_KEY'].strip() + '\"\n'
+          )
           "
         env:
           OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
           OCI_REGION:         ${{ secrets.OCI_REGION }}
           SSH_PUBLIC_KEY:     ${{ secrets.SSH_PUBLIC_KEY }}
 
-      # ── 10. Terraform init ────────────────────────────────────────────────────
+      # ── 9. Terraform init with OCI Object Storage remote backend ──────────────
+      # State is stored in ods-tf-state bucket — persists across all runs.
+      # The http backend uses OCI's S3-compatible PAR (Pre-Authenticated Request)
+      # URL pattern for statefile access authenticated via OCI sig v1.
       - name: Terraform init — network
         if: steps.preflight.outputs.instance_count == '0'
-        run: terraform -chdir=01-provision/network init
+        run: |
+          terraform -chdir=01-provision/network init \
+            -backend-config="address=https://objectstorage.${OCI_REGION}.oraclecloud.com/v1/${OCI_NAMESPACE}/${OCI_TF_STATE_BUCKET}/network%2Fterraform.tfstate" \
+            -backend-config="update_method=PUT" \
+            -backend-config="username=${OCI_TENANCY_OCID}/${OCI_USER_OCID}/${OCI_FINGERPRINT}" \
+            -backend-config="password=${OCI_PRIVATE_KEY}"
+        env:
+          OCI_REGION:           ${{ secrets.OCI_REGION }}
+          OCI_NAMESPACE:        ${{ secrets.OCI_NAMESPACE }}
+          OCI_TF_STATE_BUCKET:  ${{ secrets.OCI_TF_STATE_BUCKET }}
+          OCI_TENANCY_OCID:     ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID:        ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT:      ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY:      ${{ secrets.OCI_PRIVATE_KEY }}
 
       - name: Terraform init — instance
         if: steps.preflight.outputs.instance_count == '0'
-        run: terraform -chdir=01-provision/instance init
+        run: |
+          terraform -chdir=01-provision/instance init \
+            -backend-config="address=https://objectstorage.${OCI_REGION}.oraclecloud.com/v1/${OCI_NAMESPACE}/${OCI_TF_STATE_BUCKET}/instance%2Fterraform.tfstate" \
+            -backend-config="update_method=PUT" \
+            -backend-config="username=${OCI_TENANCY_OCID}/${OCI_USER_OCID}/${OCI_FINGERPRINT}" \
+            -backend-config="password=${OCI_PRIVATE_KEY}"
+        env:
+          OCI_REGION:           ${{ secrets.OCI_REGION }}
+          OCI_NAMESPACE:        ${{ secrets.OCI_NAMESPACE }}
+          OCI_TF_STATE_BUCKET:  ${{ secrets.OCI_TF_STATE_BUCKET }}
+          OCI_TENANCY_OCID:     ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID:        ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT:      ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY:      ${{ secrets.OCI_PRIVATE_KEY }}
 
-      # ── 11. Apply network (idempotent) ────────────────────────────────────────
+      # ── 10. Apply network (idempotent — state in OCI tells us what exists) ────
       - name: Apply network module
         if: steps.preflight.outputs.instance_count == '0'
         run: |
@@ -176,7 +178,7 @@ jobs:
           echo "SUBNET_ID=$SUBNET_ID" >> "$GITHUB_ENV"
           echo "Network ready. Subnet: $SUBNET_ID"
 
-      # ── 12. Try each AD dynamically ───────────────────────────────────────────
+      # ── 11. Try each AD dynamically ───────────────────────────────────────────
       - name: Try all availability domains
         if: steps.preflight.outputs.instance_count == '0'
         id: instance
@@ -210,28 +212,7 @@ jobs:
             echo "success=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 13. Save Terraform state ──────────────────────────────────────────────
-      - name: Save network state
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            01-provision/network/.terraform
-            01-provision/network/.terraform.lock.hcl
-            01-provision/network/terraform.tfstate
-          key: oci-network-state-${{ secrets.OCI_COMPARTMENT_ID }}
-
-      - name: Save instance state
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            01-provision/instance/.terraform
-            01-provision/instance/.terraform.lock.hcl
-            01-provision/instance/terraform.tfstate
-          key: oci-instance-state-${{ github.run_id }}
-
-      # ── 14. Report result ─────────────────────────────────────────────────────
+      # ── 12. Report result ─────────────────────────────────────────────────────
       - name: Report success
         if: steps.instance.outputs.success == 'true'
         run: |
@@ -250,7 +231,7 @@ jobs:
       - name: Report no capacity
         if: steps.preflight.outputs.instance_count == '0' && steps.instance.outputs.success == 'false'
         run: |
-          echo "::warning title=No capacity::All ADs had no capacity this run. Will retry in 30 minutes."
+          echo "::warning title=No capacity::All ADs had no capacity this run. Will retry in 15 minutes."
 
       - name: Report already provisioned
         if: steps.preflight.outputs.instance_count != '0'

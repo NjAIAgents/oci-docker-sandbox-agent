@@ -106,18 +106,70 @@ jobs:
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
 
-      # ── 8. Write tfvars ───────────────────────────────────────────────────────
-      - name: Write tfvars
+      # ── 8. Network: check if VCN/subnet already exist, create if not ──────────
+      # Uses OCI CLI to look up existing ods-vcn. If found, reads subnet_id
+      # directly — no Terraform needed. If not found, runs terraform apply once.
+      - name: Setup network
         if: steps.preflight.outputs.instance_count == '0'
+        id: network
         run: |
-          python3 -c "
+          # Check for existing VCN named ods-vcn
+          VCN_JSON=$(oci network vcn list \
+            --compartment-id "$OCI_COMPARTMENT_ID" \
+            --all --output json 2>/dev/null || echo '{"data":[]}')
+
+          SUBNET_ID=$(echo "$VCN_JSON" | python3 -c "
+          import sys, json, subprocess, os
+          vcns = [v for v in json.load(sys.stdin)['data']
+                  if v.get('display-name') == 'ods-vcn'
+                  and v.get('lifecycle-state') != 'TERMINATED']
+          if not vcns:
+              print('')
+              sys.exit(0)
+          vcn_id = vcns[0]['id']
+          # VCN exists — fetch subnet ID via OCI CLI
+          result = subprocess.run([
+              'oci', 'network', 'subnet', 'list',
+              '--compartment-id', os.environ['OCI_COMPARTMENT_ID'],
+              '--vcn-id', vcn_id,
+              '--output', 'json'
+          ], capture_output=True, text=True)
+          subnets = json.loads(result.stdout).get('data', [])
+          active = [s for s in subnets if s.get('lifecycle-state') != 'TERMINATED']
+          print(active[0]['id'] if active else '')
+          ")
+
+          if [ -n "$SUBNET_ID" ]; then
+            echo "Network already exists. Subnet: $SUBNET_ID"
+            echo "subnet_id=$SUBNET_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing network found — creating with Terraform..."
+
+            # Write tfvars
+            python3 -c "
           import os
-          # network tfvars
           open('01-provision/network/terraform.tfvars', 'w').write(
             'compartment_id = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
             'region         = \"' + os.environ['OCI_REGION'] + '\"\n'
           )
-          # instance tfvars
+          "
+            terraform -chdir=01-provision/network init
+            terraform -chdir=01-provision/network apply -auto-approve
+
+            SUBNET_ID=$(terraform -chdir=01-provision/network output -raw subnet_id)
+            echo "Network created. Subnet: $SUBNET_ID"
+            echo "subnet_id=$SUBNET_ID" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+          OCI_REGION:         ${{ secrets.OCI_REGION }}
+
+      # ── 9. Write instance tfvars ───────────────────────────────────────────────
+      - name: Write instance tfvars
+        if: steps.preflight.outputs.instance_count == '0'
+        run: |
+          python3 -c "
+          import os
           open('01-provision/instance/terraform.tfvars', 'w').write(
             'compartment_id  = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
             'region          = \"' + os.environ['OCI_REGION'] + '\"\n' +
@@ -131,58 +183,17 @@ jobs:
           OCI_REGION:         ${{ secrets.OCI_REGION }}
           SSH_PUBLIC_KEY:     ${{ secrets.SSH_PUBLIC_KEY }}
 
-      # ── 9. Terraform init with OCI Object Storage remote backend ──────────────
-      # State is stored in ods-tf-state bucket — persists across all runs.
-      # The http backend uses OCI's S3-compatible PAR (Pre-Authenticated Request)
-      # URL pattern for statefile access authenticated via OCI sig v1.
-      - name: Terraform init — network
-        if: steps.preflight.outputs.instance_count == '0'
-        run: |
-          terraform -chdir=01-provision/network init \
-            -backend-config="address=https://objectstorage.${OCI_REGION}.oraclecloud.com/v1/${OCI_NAMESPACE}/${OCI_TF_STATE_BUCKET}/network%2Fterraform.tfstate" \
-            -backend-config="update_method=PUT" \
-            -backend-config="username=${OCI_TENANCY_OCID}/${OCI_USER_OCID}/${OCI_FINGERPRINT}" \
-            -backend-config="password=${OCI_PRIVATE_KEY}"
-        env:
-          OCI_REGION:           ${{ secrets.OCI_REGION }}
-          OCI_NAMESPACE:        ${{ secrets.OCI_NAMESPACE }}
-          OCI_TF_STATE_BUCKET:  ${{ secrets.OCI_TF_STATE_BUCKET }}
-          OCI_TENANCY_OCID:     ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_USER_OCID:        ${{ secrets.OCI_USER_OCID }}
-          OCI_FINGERPRINT:      ${{ secrets.OCI_FINGERPRINT }}
-          OCI_PRIVATE_KEY:      ${{ secrets.OCI_PRIVATE_KEY }}
-
+      # ── 10. Terraform init — instance ─────────────────────────────────────────
       - name: Terraform init — instance
         if: steps.preflight.outputs.instance_count == '0'
-        run: |
-          terraform -chdir=01-provision/instance init \
-            -backend-config="address=https://objectstorage.${OCI_REGION}.oraclecloud.com/v1/${OCI_NAMESPACE}/${OCI_TF_STATE_BUCKET}/instance%2Fterraform.tfstate" \
-            -backend-config="update_method=PUT" \
-            -backend-config="username=${OCI_TENANCY_OCID}/${OCI_USER_OCID}/${OCI_FINGERPRINT}" \
-            -backend-config="password=${OCI_PRIVATE_KEY}"
-        env:
-          OCI_REGION:           ${{ secrets.OCI_REGION }}
-          OCI_NAMESPACE:        ${{ secrets.OCI_NAMESPACE }}
-          OCI_TF_STATE_BUCKET:  ${{ secrets.OCI_TF_STATE_BUCKET }}
-          OCI_TENANCY_OCID:     ${{ secrets.OCI_TENANCY_OCID }}
-          OCI_USER_OCID:        ${{ secrets.OCI_USER_OCID }}
-          OCI_FINGERPRINT:      ${{ secrets.OCI_FINGERPRINT }}
-          OCI_PRIVATE_KEY:      ${{ secrets.OCI_PRIVATE_KEY }}
-
-      # ── 10. Apply network (idempotent — state in OCI tells us what exists) ────
-      - name: Apply network module
-        if: steps.preflight.outputs.instance_count == '0'
-        run: |
-          terraform -chdir=01-provision/network apply -auto-approve
-          SUBNET_ID=$(terraform -chdir=01-provision/network output -raw subnet_id)
-          echo "SUBNET_ID=$SUBNET_ID" >> "$GITHUB_ENV"
-          echo "Network ready. Subnet: $SUBNET_ID"
+        run: terraform -chdir=01-provision/instance init
 
       # ── 11. Try each AD dynamically ───────────────────────────────────────────
       - name: Try all availability domains
         if: steps.preflight.outputs.instance_count == '0'
         id: instance
         run: |
+          SUBNET_ID="${{ steps.network.outputs.subnet_id }}"
           SUCCESS=false
 
           for AD in ${{ steps.ads.outputs.ad_list }}; do

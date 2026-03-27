@@ -135,6 +135,7 @@ jobs:
       - name: Write tfvars
         if: steps.preflight.outputs.instance_count == '0'
         run: |
+          mkdir -p 01-provision/network 01-provision/instance
           cat > 01-provision/network/terraform.tfvars <<EOF
           compartment_id = "$OCI_COMPARTMENT_ID"
           region         = "$OCI_REGION"

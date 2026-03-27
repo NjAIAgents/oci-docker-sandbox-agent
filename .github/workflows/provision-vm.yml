@@ -2,7 +2,7 @@ name: Provision OCI VM
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,6 +10,9 @@ jobs:
     name: Provision VM.Standard.A1.Flex
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      issues: write    # open notification issue on success
+      actions: write   # disable this workflow on success
 
     steps:
 
@@ -226,9 +229,12 @@ jobs:
       # ── 12. Report result ─────────────────────────────────────────────────────
       - name: Report success
         if: steps.instance.outputs.success == 'true'
+        id: report
         run: |
           PUBLIC_IP=$(terraform -chdir=01-provision/instance output -raw public_ip 2>/dev/null || echo "unknown")
           INSTANCE_ID=$(terraform -chdir=01-provision/instance output -raw instance_id 2>/dev/null || echo "unknown")
+          echo "public_ip=$PUBLIC_IP"     >> "$GITHUB_OUTPUT"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
           echo "::notice title=VM Provisioned::Public IP: $PUBLIC_IP | Instance: $INSTANCE_ID | AD: ${{ steps.instance.outputs.ad_used }}"
           echo ""
           echo "================================================"
@@ -237,12 +243,51 @@ jobs:
           echo "  Instance ID: $INSTANCE_ID"
           echo "  AD:          ${{ steps.instance.outputs.ad_used }}"
           echo "================================================"
-          echo "Add to your .env:  VM_PUBLIC_IP=$PUBLIC_IP"
+
+      # ── 13. Open GitHub Issue — triggers email notification to repo owner ─────
+      - name: Notify via GitHub Issue
+        if: steps.instance.outputs.success == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'OCI VM Provisioned',
+              body: [
+                '## Your OCI Always Free VM is ready!',
+                '',
+                '| Field | Value |',
+                '|-------|-------|',
+                `| Public IP | \`${process.env.PUBLIC_IP}\` |`,
+                `| Instance ID | \`${process.env.INSTANCE_ID}\` |`,
+                `| Availability Domain | \`${{ steps.instance.outputs.ad_used }}\` |`,
+                '',
+                `**SSH:** \`ssh ubuntu@${process.env.PUBLIC_IP}\``,
+                '',
+                '> Auto-created by the provisioning workflow. Close once you have saved the IP.',
+              ].join('\n'),
+            })
+        env:
+          PUBLIC_IP:   ${{ steps.report.outputs.public_ip }}
+          INSTANCE_ID: ${{ steps.report.outputs.instance_id }}
+
+      # ── 14. Disable this workflow — no more scheduled runs needed ─────────────
+      - name: Disable provisioning workflow
+        if: steps.instance.outputs.success == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.disableWorkflow({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'provision-vm.yml',
+            })
 
       - name: Report no capacity
         if: steps.preflight.outputs.instance_count == '0' && steps.instance.outputs.success == 'false'
         run: |
-          echo "::warning title=No capacity::All ADs had no capacity this run. Will retry in 15 minutes."
+          echo "::warning title=No capacity::All ADs had no capacity this run. Will retry in 30 minutes."
 
       - name: Report already provisioned
         if: steps.preflight.outputs.instance_count != '0'

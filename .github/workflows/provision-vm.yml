@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
+      contents: read   # checkout
       issues: write    # open notification issue on success
       actions: write   # disable this workflow on success
 

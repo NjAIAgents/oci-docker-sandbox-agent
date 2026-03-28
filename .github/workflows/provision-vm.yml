@@ -2,7 +2,7 @@ name: Provision OCI VM
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -288,7 +288,7 @@ jobs:
       - name: Report no capacity
         if: steps.preflight.outputs.instance_count == '0' && steps.instance.outputs.success == 'false'
         run: |
-          echo "::warning title=No capacity::All ADs had no capacity this run. Will retry in 30 minutes."
+          echo "::warning title=No capacity::All ADs had no capacity this run. Will retry in 15 minutes."
 
       - name: Report already provisioned
         if: steps.preflight.outputs.instance_count != '0'

@@ -1,0 +1,182 @@
+---
+# Post 2 — OS hardening for OCI Always Free Ubuntu 24.04 ARM VM
+#
+# What this playbook does:
+#   1. Updates all packages and enables unattended security upgrades
+#   2. Creates a non-root `ods` user with sudo and SSH key access
+#   3. Hardens SSH — disables root login and password auth
+#   4. Configures ufw — port 22 only, everything else denied
+#   5. Installs and tunes fail2ban — SSH brute-force protection
+#   6. Adds 4 GB swap — prevents OOM on agent workloads
+#
+# Run via: bash 02-harden/setup.sh
+# Or directly: ansible-playbook -i 02-harden/inventory.ini 02-harden/harden.yml
+
+- name: Harden OCI VM
+  hosts: ods_vm
+  become: true
+  vars:
+    ods_user: ods
+    swap_size: 4G
+    swap_path: /swapfile
+    ssh_public_key_path: "{{ lookup('env', 'ODS_SSH_KEY') | default(lookup('env', 'VM_SSH_KEY'), true) }}"
+
+  handlers:
+    - name: restart sshd
+      service: name=ssh state=restarted
+
+    - name: restart fail2ban
+      service: name=fail2ban state=restarted
+
+  tasks:
+
+    # ── 1. OS updates ────────────────────────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: dist
+
+    - name: Install required packages
+      apt:
+        name:
+          - ufw
+          - fail2ban
+          - unattended-upgrades
+        state: present
+
+    - name: Enable unattended security upgrades
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+
+    # ── 2. Create ods user ───────────────────────────────────────────────────
+    - name: Create ods user
+      user:
+        name: "{{ ods_user }}"
+        groups: sudo
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Add SSH public key to ods user
+      authorized_key:
+        user: "{{ ods_user }}"
+        key: "{{ lookup('file', ssh_public_key_path) }}"
+        state: present
+
+    - name: Allow ods passwordless sudo
+      copy:
+        dest: /etc/sudoers.d/ods
+        content: "ods ALL=(ALL) NOPASSWD:ALL\n"
+        validate: "visudo -cf %s"
+        mode: "0440"
+
+    # ── 3. SSH hardening ─────────────────────────────────────────────────────
+    - name: Harden SSH config
+      copy:
+        dest: /etc/ssh/sshd_config.d/99-ods-harden.conf
+        content: |
+          PermitRootLogin no
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          AuthorizedKeysFile .ssh/authorized_keys
+      notify: restart sshd
+
+    # ── 4. ufw firewall ──────────────────────────────────────────────────────
+    - name: Reset ufw to defaults
+      ufw:
+        state: reset
+
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: Enable ufw with default deny
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    # ── 5. fail2ban ──────────────────────────────────────────────────────────
+    - name: Configure fail2ban jail
+      copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime  = 3600
+          findtime = 600
+          maxretry = 5
+
+          [sshd]
+          enabled  = true
+          port     = ssh
+          logpath  = %(sshd_log)s
+          backend  = %(sshd_backend)s
+      notify: restart fail2ban
+
+    - name: Enable and start fail2ban
+      service:
+        name: fail2ban
+        enabled: yes
+        state: started
+
+    # ── 6. Swap ──────────────────────────────────────────────────────────────
+    - name: Check if swap is already configured
+      command: swapon --show
+      register: swap_check
+      changed_when: false
+
+    - name: Create swap file
+      command: "fallocate -l {{ swap_size }} {{ swap_path }}"
+      when: swap_check.stdout == ""
+
+    - name: Set swap file permissions
+      file:
+        path: "{{ swap_path }}"
+        mode: "0600"
+      when: swap_check.stdout == ""
+
+    - name: Format swap file
+      command: "mkswap {{ swap_path }}"
+      when: swap_check.stdout == ""
+
+    - name: Enable swap
+      command: "swapon {{ swap_path }}"
+      when: swap_check.stdout == ""
+
+    - name: Persist swap in fstab
+      lineinfile:
+        path: /etc/fstab
+        line: "{{ swap_path }} none swap sw 0 0"
+        state: present
+
+    # ── 7. Summary ───────────────────────────────────────────────────────────
+    - name: Collect swap info
+      command: free -h
+      register: free_output
+      changed_when: false
+
+    - name: Collect ufw status
+      command: ufw status
+      register: ufw_output
+      changed_when: false
+
+    - name: Print hardening summary
+      debug:
+        msg:
+          - "================================================"
+          - "  Hardening complete"
+          - "  ods user created with sudo + SSH key"
+          - "  SSH: root login disabled, password auth disabled"
+          - "  ufw: port 22 allowed, all else denied"
+          - "  fail2ban: sshd jail active (5 retries / 1hr ban)"
+          - "  {{ free_output.stdout_lines | select('match', 'Swap') | list | first | default('Swap: check manually') }}"
+          - "================================================"

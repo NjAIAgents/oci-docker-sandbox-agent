@@ -28,14 +28,8 @@ provision: check-provision-deps
 	cd 01-provision && bash setup.sh
 
 # ---- Post 2: OS hardening ----
-harden:
-	@echo ""
-	@echo "Covered in Post 2: OS hardening, firewall, fail2ban, and swap."
-	@echo "Pull the latest and follow 02-harden/README.md"
-	@echo ""
-	@echo "  git pull"
-	@echo "  cat 02-harden/README.md"
-	@echo ""
+harden: check-ssh-deps
+	cd 02-harden && bash setup.sh
 
 # ---- Post 3: Docker sandbox ----
 docker:

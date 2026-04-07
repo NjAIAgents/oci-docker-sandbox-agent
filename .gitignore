@@ -1,6 +1,9 @@
 # Draft blog posts and local notes — not part of the public repo
 doc/
 
+# Claude Code project instructions — local only
+CLAUDE.md
+
 # ----------------------------------------------------------------
 # Secrets and environment
 # ----------------------------------------------------------------

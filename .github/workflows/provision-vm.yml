@@ -144,7 +144,8 @@ jobs:
           ")
 
           if [ -n "$SUBNET_ID" ]; then
-            echo "Network already exists. Subnet: $SUBNET_ID"
+            echo "::add-mask::$SUBNET_ID"
+            echo "Network already exists. Subnet: ***"
             echo "subnet_id=$SUBNET_ID" >> "$GITHUB_OUTPUT"
           else
             echo "No existing network found — creating with Terraform..."
@@ -161,7 +162,8 @@ jobs:
             terraform -chdir=01-provision/network apply -auto-approve
 
             SUBNET_ID=$(terraform -chdir=01-provision/network output -raw subnet_id)
-            echo "Network created. Subnet: $SUBNET_ID"
+            echo "::add-mask::$SUBNET_ID"
+            echo "Network created. Subnet: ***"
             echo "subnet_id=$SUBNET_ID" >> "$GITHUB_OUTPUT"
           fi
         env:
@@ -207,12 +209,14 @@ jobs:
             # Clean up any partial instance state
             terraform -chdir=01-provision/instance destroy -auto-approve \
               -var "availability_domain=$AD" \
-              -var "subnet_id=$SUBNET_ID" 2>&1 || true
+              -var "subnet_id=$SUBNET_ID" \
+              -var "tenancy_ocid=$OCI_TENANCY_OCID" 2>&1 || true
 
             # Attempt instance creation
             if terraform -chdir=01-provision/instance apply -auto-approve \
                 -var "availability_domain=$AD" \
-                -var "subnet_id=$SUBNET_ID" 2>&1; then
+                -var "subnet_id=$SUBNET_ID" \
+                -var "tenancy_ocid=$OCI_TENANCY_OCID" 2>&1; then
               echo "ad_used=$AD" >> "$GITHUB_OUTPUT"
               SUCCESS=true
               break
@@ -226,6 +230,8 @@ jobs:
           else
             echo "success=false" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
 
       # ── 12. Report result ─────────────────────────────────────────────────────
       - name: Report success
@@ -234,15 +240,16 @@ jobs:
         run: |
           PUBLIC_IP=$(terraform -chdir=01-provision/instance output -raw public_ip 2>/dev/null || echo "unknown")
           INSTANCE_ID=$(terraform -chdir=01-provision/instance output -raw instance_id 2>/dev/null || echo "unknown")
+          echo "::add-mask::$PUBLIC_IP"
+          echo "::add-mask::$INSTANCE_ID"
           echo "public_ip=$PUBLIC_IP"     >> "$GITHUB_OUTPUT"
           echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
-          echo "::notice title=VM Provisioned::Public IP: $PUBLIC_IP | Instance: $INSTANCE_ID | AD: ${{ steps.instance.outputs.ad_used }}"
+          echo "::notice title=VM Provisioned::Instance provisioned in AD: ${{ steps.instance.outputs.ad_used }} — check OCI Console for details"
           echo ""
           echo "================================================"
           echo "  SUCCESS — OCI VM provisioned"
-          echo "  Public IP:   $PUBLIC_IP"
-          echo "  Instance ID: $INSTANCE_ID"
-          echo "  AD:          ${{ steps.instance.outputs.ad_used }}"
+          echo "  AD: ${{ steps.instance.outputs.ad_used }}"
+          echo "  (IP and instance ID masked — check OCI Console)"
           echo "================================================"
 
       # ── 13. Open GitHub Issue — triggers email notification to repo owner ─────
@@ -254,19 +261,20 @@ jobs:
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: 'OCI VM Provisioned',
+              title: '✅ OCI VM Provisioned',
               body: [
                 '## Your OCI Always Free VM is ready!',
                 '',
-                '| Field | Value |',
-                '|-------|-------|',
-                `| Public IP | \`${process.env.PUBLIC_IP}\` |`,
-                `| Instance ID | \`${process.env.INSTANCE_ID}\` |`,
-                `| Availability Domain | \`${{ steps.instance.outputs.ad_used }}\` |`,
+                `Provisioned in availability domain: **${{ steps.instance.outputs.ad_used }}**`,
                 '',
-                `**SSH:** \`ssh ubuntu@${process.env.PUBLIC_IP}\``,
+                'To find your instance details:',
+                '1. Go to **OCI Console → Compute → Instances**',
+                '2. Select your sandbox compartment',
+                '3. Click on **ods-instance** to see the public IP and instance details',
+                '4. SSH in with: `ssh ubuntu@<public-ip>`',
                 '',
-                '> Auto-created by the provisioning workflow. Close once you have saved the IP.',
+                '> The provisioning workflow has been disabled and will not run again.',
+                '> Close this issue once you have noted your instance details.',
               ].join('\n'),
             })
         env:

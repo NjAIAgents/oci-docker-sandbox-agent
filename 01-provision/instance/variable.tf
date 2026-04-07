@@ -41,3 +41,8 @@ variable "ssh_public_key" {
   type        = string
   description = "SSH public key content (not path) for instance access."
 }
+
+variable "tenancy_ocid" {
+  type        = string
+  description = "OCI Tenancy OCID. Passed dynamically by the workflow via -var flag."
+}

@@ -23,7 +23,7 @@ terraform {
 }
 
 provider "oci" {
-  tenancy_ocid = "ocid1.tenancy.oc1..aaaaaaaafzmbug5a3cot4e3q6nhjigj2gorrglld7ul4akivklwxtu5ohzoa"
+  tenancy_ocid = var.tenancy_ocid
   region       = var.region
 }
 

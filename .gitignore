@@ -1,8 +1,10 @@
 # Draft blog posts and local notes — not part of the public repo
 doc/
 
-# Claude Code project instructions — local only
+# Claude Code project instructions and internal context — local only
 CLAUDE.md
+context.md
+nj_writing_style_profile.md
 
 # ----------------------------------------------------------------
 # Secrets and environment

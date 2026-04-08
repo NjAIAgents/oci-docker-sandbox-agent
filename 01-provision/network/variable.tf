@@ -12,3 +12,8 @@ variable "region" {
   type        = string
   description = "OCI region identifier (e.g. us-chicago-1)."
 }
+
+variable "tenancy_ocid" {
+  type        = string
+  description = "OCI Tenancy OCID. Passed dynamically by the workflow via -backend-config or -var."
+}

@@ -159,7 +159,8 @@ jobs:
           )
           "
             terraform -chdir=01-provision/network init
-            terraform -chdir=01-provision/network apply -auto-approve
+            terraform -chdir=01-provision/network apply -auto-approve \
+              -var "tenancy_ocid=$OCI_TENANCY_OCID"
 
             SUBNET_ID=$(terraform -chdir=01-provision/network output -raw subnet_id)
             echo "::add-mask::$SUBNET_ID"

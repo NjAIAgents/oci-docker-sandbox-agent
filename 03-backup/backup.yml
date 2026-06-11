@@ -18,11 +18,12 @@
   become: true
 
   vars:
-    backup_script_src:   "{{ playbook_dir }}/pg-backup.sh"
+    engagehub_scripts:   "/Users/navjyotnishant/Desktop/github/ToolTropolis/EngageHub/scripts"
+    backup_script_src:   "{{ engagehub_scripts }}/pg-backup.sh"
     backup_script_dest:  /usr/local/bin/pg-backup.sh
-    restore_script_src:  "{{ playbook_dir }}/pg-restore.sh"
+    restore_script_src:  "{{ engagehub_scripts }}/pg-restore.sh"
     restore_script_dest: /usr/local/bin/pg-restore.sh
-    cleanup_script_src:  "{{ playbook_dir }}/pg-backup-cleanup.sh"
+    cleanup_script_src:  "{{ engagehub_scripts }}/pg-backup-cleanup.sh"
     cleanup_script_dest: /usr/local/bin/pg-backup-cleanup.sh
     backup_cron_hour:    "2"
     backup_cron_minute:  "0"

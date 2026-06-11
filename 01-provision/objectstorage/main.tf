@@ -25,18 +25,11 @@ provider "oci" {
 }
 
 # ============================================================
-# Object Storage namespace (tenancy-scoped, read-only lookup)
-# ============================================================
-data "oci_objectstorage_namespace" "ns" {
-  compartment_id = var.compartment_id
-}
-
-# ============================================================
 # Postgres backup bucket
 # ============================================================
 resource "oci_objectstorage_bucket" "pg_backups" {
   compartment_id = var.compartment_id
-  namespace      = data.oci_objectstorage_namespace.ns.namespace
+  namespace      = var.object_storage_namespace
   name           = "ods-pg-backups"
   access_type    = "NoPublicAccess"
 
@@ -52,7 +45,7 @@ resource "oci_objectstorage_bucket" "pg_backups" {
 # Keeps the 20 GB Always Free Object Storage quota from filling up
 # ============================================================
 resource "oci_objectstorage_object_lifecycle_policy" "pg_backup_retention" {
-  namespace   = data.oci_objectstorage_namespace.ns.namespace
+  namespace   = var.object_storage_namespace
   bucket      = oci_objectstorage_bucket.pg_backups.name
 
   rules {
@@ -103,7 +96,7 @@ output "bucket_name" {
 }
 
 output "namespace" {
-  value       = data.oci_objectstorage_namespace.ns.namespace
+  value       = var.object_storage_namespace
   description = "Object Storage namespace. Use in OCI CLI: --namespace <value>"
 }
 

@@ -47,14 +47,16 @@ jobs:
           python3 -c "
           import os
           open('01-provision/objectstorage/terraform.tfvars', 'w').write(
-            'compartment_id = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
-            'region         = \"' + os.environ['OCI_REGION'] + '\"\n' +
-            'retention_days = 30\n'
+            'compartment_id           = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
+            'region                   = \"' + os.environ['OCI_REGION'] + '\"\n' +
+            'object_storage_namespace = \"' + os.environ['OCI_NAMESPACE'] + '\"\n' +
+            'retention_days           = 30\n'
           )
           "
         env:
           OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
           OCI_REGION:         ${{ secrets.OCI_REGION }}
+          OCI_NAMESPACE:      ${{ secrets.OCI_NAMESPACE }}
 
       # ── 5. Terraform init + apply ─────────────────────────────────────────────
       - name: Terraform init

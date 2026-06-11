@@ -3,14 +3,15 @@
 #
 # What this playbook does:
 #   1. Installs OCI CLI on the VM (if not present)
-#   2. Deploys /usr/local/bin/pg-backup.sh from repo
-#   3. Writes /etc/ods/backup.env with the encryption key (root:root 600)
+#   2. Deploys /usr/local/bin/pg-backup.sh and pg-restore.sh from repo
+#   3. Writes /etc/ods/backup.env with the Vault token (root:root 600)
+#      The encryption key is fetched from Vault at runtime — not stored on disk.
 #   4. Ensures cron job runs daily at 02:00 UTC as root
 #
 # Idempotent — re-running corrects any drift from manual edits on the server.
 #
 # Secrets consumed (passed as extra-vars by the workflow):
-#   backup_encryption_key   — AES-256 passphrase for openssl enc
+#   vault_token   — Vault token with read access to secret/engagehub/backup
 
 - name: Deploy Postgres backup
   hosts: ods_vm
@@ -75,10 +76,10 @@
         group: root
         mode:  "0700"
 
-    - name: Write backup env file with encryption key
+    - name: Write backup env file with Vault token
       copy:
         dest:    "{{ backup_env_file }}"
-        content: "BACKUP_ENCRYPTION_KEY={{ backup_encryption_key }}\n"
+        content: "VAULT_TOKEN={{ vault_token }}\n"
         owner:   root
         group:   root
         mode:    "0600"

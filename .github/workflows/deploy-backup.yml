@@ -53,8 +53,8 @@ jobs:
         run: |
           ansible-playbook \
             -i /tmp/inventory.ini \
-            --extra-vars "backup_encryption_key=${BACKUP_ENCRYPTION_KEY}" \
+            --extra-vars "vault_token=${VAULT_BACKUP_TOKEN}" \
             03-backup/backup.yml
         env:
-          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          VAULT_BACKUP_TOKEN:        ${{ secrets.VAULT_BACKUP_TOKEN }}
           ANSIBLE_HOST_KEY_CHECKING: "False"

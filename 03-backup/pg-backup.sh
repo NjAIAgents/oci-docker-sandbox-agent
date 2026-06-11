@@ -32,10 +32,17 @@ LOG_TAG="pg-backup"
 log()  { logger -t "$LOG_TAG" "$1"; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $1"; }
 fail() { log "ERROR: $1"; exit 1; }
 
-# ── Load encryption key ───────────────────────────────────────────────────────
+# ── Load Vault token and fetch encryption key ─────────────────────────────────
 [ -f "$ENV_FILE" ] || fail "$ENV_FILE not found. Run the backup Ansible playbook first."
-BACKUP_ENCRYPTION_KEY=$(grep -m1 '^BACKUP_ENCRYPTION_KEY=' "$ENV_FILE" | cut -d= -f2-)
-[ -n "$BACKUP_ENCRYPTION_KEY" ] || fail "BACKUP_ENCRYPTION_KEY is empty in $ENV_FILE"
+VAULT_TOKEN=$(grep -m1 '^VAULT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
+[ -n "$VAULT_TOKEN" ] || fail "VAULT_TOKEN is empty in $ENV_FILE"
+
+BACKUP_ENCRYPTION_KEY=$(docker exec \
+  -e VAULT_TOKEN="$VAULT_TOKEN" \
+  -e VAULT_ADDR=http://0.0.0.0:8200 \
+  engagehub-vault \
+  vault kv get -field=encryption_key secret/engagehub/backup 2>/dev/null)
+[ -n "$BACKUP_ENCRYPTION_KEY" ] || fail "Failed to fetch encryption key from Vault"
 
 # ── Preflight checks ──────────────────────────────────────────────────────────
 docker inspect "$DB_CONTAINER" --format '{{.State.Running}}' 2>/dev/null \

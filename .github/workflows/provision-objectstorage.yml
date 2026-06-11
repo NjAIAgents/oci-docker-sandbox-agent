@@ -50,13 +50,15 @@ jobs:
             'compartment_id           = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
             'region                   = \"' + os.environ['OCI_REGION'] + '\"\n' +
             'object_storage_namespace = \"' + os.environ['OCI_NAMESPACE'] + '\"\n' +
-            'retention_days           = 30\n'
+            'retention_days           = 30\n' +
+            'notification_email       = \"' + os.environ['NOTIFICATION_EMAIL'] + '\"\n'
           )
           "
         env:
           OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
           OCI_REGION:         ${{ secrets.OCI_REGION }}
           OCI_NAMESPACE:      ${{ secrets.OCI_NAMESPACE }}
+          NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
 
       # ── 5. Terraform init + apply ─────────────────────────────────────────────
       - name: Terraform init

@@ -25,3 +25,8 @@ variable "retention_days" {
   description = "Number of days to retain backup objects before auto-deletion. 30 is a safe default for the 20 GB Always Free quota."
   default     = 30
 }
+
+variable "notification_email" {
+  type        = string
+  description = "Email address to receive bucket size alerts (16 GB warning, 18 GB critical). Must confirm the OCI subscription email before alerts fire."
+}

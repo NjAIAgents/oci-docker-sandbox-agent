@@ -97,7 +97,7 @@ jobs:
               terraform -chdir=01-provision/objectstorage import \
                 -var "tenancy_ocid=$OCI_TENANCY_OCID" \
                 oci_objectstorage_object_lifecycle_policy.pg_backup_retention \
-                "n/${OCI_NAMESPACE}/b/ods-pg-backups"
+                "${OCI_NAMESPACE}/ods-pg-backups"
             fi
           else
             echo "Bucket does not exist — Terraform will create it."

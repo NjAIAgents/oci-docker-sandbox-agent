@@ -42,28 +42,14 @@ resource "oci_objectstorage_bucket" "pg_backups" {
 }
 
 # ============================================================
-# Lifecycle policy
-#   Rule 1: Move to Archive tier after 7 days  (Archive tier is free, separate 20 GB quota)
-#   Rule 2: Delete after retention_days (30)   (Archive minimum retention is 90 days —
-#                                               OCI won't error but objects < 90 days incur
-#                                               an early-delete fee on paid tenancies; on
-#                                               Always Free this is not charged)
+# Lifecycle policy — delete after retention_days
+# Archive tiering is NOT used: Always Free gives 20 GB total shared across
+# all tiers (Standard + Infrequent Access + Archive combined), so tiering
+# provides no additional free quota.
 # ============================================================
 resource "oci_objectstorage_object_lifecycle_policy" "pg_backup_retention" {
   namespace   = var.object_storage_namespace
   bucket      = oci_objectstorage_bucket.pg_backups.name
-
-  rules {
-    name        = "tier-to-archive"
-    action      = "ARCHIVE"
-    is_enabled  = true
-    time_amount = 7
-    time_unit   = "DAYS"
-
-    object_name_filter {
-      inclusion_prefixes = ["backups/"]
-    }
-  }
 
   rules {
     name        = "delete-old-backups"
@@ -100,66 +86,36 @@ resource "oci_ons_subscription" "bucket_alerts_email" {
 #   16 GB = 17,179,869,184
 #   18 GB = 19,327,352,832
 # ============================================================
-# Standard tier alarms (recent 7-day backups)
-resource "oci_monitoring_alarm" "standard_warning" {
+# ============================================================
+# Alarms — watch total bucket storage (Standard covers all tiers in OCI metrics)
+# Always Free limit: 20 GB combined across all tiers
+# ============================================================
+resource "oci_monitoring_alarm" "bucket_warning" {
   compartment_id        = var.compartment_id
-  display_name          = "ods-pg-backups-standard-warning-16gb"
+  display_name          = "ods-pg-backups-warning-16gb"
   is_enabled            = true
   metric_compartment_id = var.compartment_id
 
   namespace   = "oci_objectstorage"
   query       = "StorageBytes[1d]{bucketName = \"ods-pg-backups\"}.max() > ${16 * 1024 * 1024 * 1024}"
   severity    = "WARNING"
-  body        = "ods-pg-backups Standard tier has exceeded 16 GB (Always Free limit: 20 GB). Recent backups are growing — check backup size or reduce daily frequency."
+  body        = "ods-pg-backups has exceeded 16 GB. Always Free limit is 20 GB total across all tiers. Review backup size or reduce retention_days."
 
   destinations     = [oci_ons_notification_topic.bucket_alerts.id]
   pending_duration = "PT5M"
   is_notifications_per_metric_dimension_enabled = false
 }
 
-resource "oci_monitoring_alarm" "standard_urgent" {
+resource "oci_monitoring_alarm" "bucket_urgent" {
   compartment_id        = var.compartment_id
-  display_name          = "ods-pg-backups-standard-urgent-18gb"
+  display_name          = "ods-pg-backups-urgent-18gb"
   is_enabled            = true
   metric_compartment_id = var.compartment_id
 
   namespace   = "oci_objectstorage"
   query       = "StorageBytes[1d]{bucketName = \"ods-pg-backups\"}.max() > ${18 * 1024 * 1024 * 1024}"
   severity    = "CRITICAL"
-  body        = "URGENT: ods-pg-backups Standard tier has exceeded 18 GB (Always Free limit: 20 GB). Immediate action required to avoid overage charges."
-
-  destinations     = [oci_ons_notification_topic.bucket_alerts.id]
-  pending_duration = "PT5M"
-  is_notifications_per_metric_dimension_enabled = false
-}
-
-# Archive tier alarms (backups older than 7 days)
-resource "oci_monitoring_alarm" "archive_warning" {
-  compartment_id        = var.compartment_id
-  display_name          = "ods-pg-backups-archive-warning-16gb"
-  is_enabled            = true
-  metric_compartment_id = var.compartment_id
-
-  namespace   = "oci_objectstorage"
-  query       = "ArchiveStorageBytes[1d]{bucketName = \"ods-pg-backups\"}.max() > ${16 * 1024 * 1024 * 1024}"
-  severity    = "WARNING"
-  body        = "ods-pg-backups Archive tier has exceeded 16 GB (Always Free limit: 20 GB). Consider reducing retention_days."
-
-  destinations     = [oci_ons_notification_topic.bucket_alerts.id]
-  pending_duration = "PT5M"
-  is_notifications_per_metric_dimension_enabled = false
-}
-
-resource "oci_monitoring_alarm" "archive_urgent" {
-  compartment_id        = var.compartment_id
-  display_name          = "ods-pg-backups-archive-urgent-18gb"
-  is_enabled            = true
-  metric_compartment_id = var.compartment_id
-
-  namespace   = "oci_objectstorage"
-  query       = "ArchiveStorageBytes[1d]{bucketName = \"ods-pg-backups\"}.max() > ${18 * 1024 * 1024 * 1024}"
-  severity    = "CRITICAL"
-  body        = "URGENT: ods-pg-backups Archive tier has exceeded 18 GB (Always Free limit: 20 GB). Immediate action required to avoid overage charges."
+  body        = "URGENT: ods-pg-backups has exceeded 18 GB. Always Free limit is 20 GB total. Immediate action required to avoid overage charges."
 
   destinations     = [oci_ons_notification_topic.bucket_alerts.id]
   pending_duration = "PT5M"

@@ -12,11 +12,11 @@
 #
 # Restore:
 #   oci os object get --name backups/<file> --file - \
-#     | openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_ENCRYPTION_KEY \
+#     | openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass file:/etc/ods/backup.key \
 #     | gunzip \
 #     | docker exec -i engagehub-postgres psql -U engagehub_admin -d engagehub
 
-set -euo pipefail
+set -euo pipefail -o pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ENV_FILE="/etc/ods/backup.env"
@@ -34,9 +34,8 @@ fail() { log "ERROR: $1"; exit 1; }
 
 # ── Load encryption key ───────────────────────────────────────────────────────
 [ -f "$ENV_FILE" ] || fail "$ENV_FILE not found. Run the backup Ansible playbook first."
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-[ -n "${BACKUP_ENCRYPTION_KEY:-}" ] || fail "BACKUP_ENCRYPTION_KEY is not set in $ENV_FILE"
+BACKUP_ENCRYPTION_KEY=$(grep -m1 '^BACKUP_ENCRYPTION_KEY=' "$ENV_FILE" | cut -d= -f2-)
+[ -n "$BACKUP_ENCRYPTION_KEY" ] || fail "BACKUP_ENCRYPTION_KEY is empty in $ENV_FILE"
 
 # ── Preflight checks ──────────────────────────────────────────────────────────
 docker inspect "$DB_CONTAINER" --format '{{.State.Running}}' 2>/dev/null \
@@ -47,11 +46,18 @@ command -v oci >/dev/null 2>&1 || fail "OCI CLI not found. Install it first."
 # ── Backup ────────────────────────────────────────────────────────────────────
 log "Starting backup: $DB_NAME → $OBJECT_NAME"
 
+# Write key to a temp file so openssl can read it without needing the env var
+# under sudo (sudo strips environment variables by default)
+KEY_FILE=$(mktemp)
+chmod 600 "$KEY_FILE"
+printf '%s' "$BACKUP_ENCRYPTION_KEY" > "$KEY_FILE"
+trap 'rm -f "$KEY_FILE"' EXIT
+
 docker exec "$DB_CONTAINER" \
   pg_dump -U "$DB_USER" -d "$DB_NAME" --no-password \
   | gzip \
   | openssl enc -aes-256-cbc -pbkdf2 -iter 600000 \
-      -pass env:BACKUP_ENCRYPTION_KEY \
+      -pass "file:${KEY_FILE}" \
   | oci os object put \
       --auth instance_principal \
       --bucket-name "$BUCKET" \

@@ -18,12 +18,14 @@
   become: true
 
   vars:
-    backup_script_src:  "{{ playbook_dir }}/pg-backup.sh"
-    backup_script_dest: /usr/local/bin/pg-backup.sh
+    backup_script_src:   "{{ playbook_dir }}/pg-backup.sh"
+    backup_script_dest:  /usr/local/bin/pg-backup.sh
     restore_script_src:  "{{ playbook_dir }}/pg-restore.sh"
     restore_script_dest: /usr/local/bin/pg-restore.sh
-    backup_cron_hour:   "2"
-    backup_cron_minute: "0"
+    cleanup_script_src:  "{{ playbook_dir }}/pg-backup-cleanup.sh"
+    cleanup_script_dest: /usr/local/bin/pg-backup-cleanup.sh
+    backup_cron_hour:    "2"
+    backup_cron_minute:  "0"
 
   tasks:
 
@@ -66,14 +68,31 @@
         group: root
         mode:  "0750"
 
+    - name: Deploy cleanup script
+      copy:
+        src:   "{{ cleanup_script_src }}"
+        dest:  "{{ cleanup_script_dest }}"
+        owner: root
+        group: root
+        mode:  "0750"
+
     # ── 3. Cron job ──────────────────────────────────────────────────────────
-    - name: Ensure cron job is present
+    - name: Ensure backup cron job is present
       cron:
         name:   "engagehub postgres daily backup"
         user:   root
         hour:   "{{ backup_cron_hour }}"
         minute: "{{ backup_cron_minute }}"
         job:    "{{ backup_script_dest }} >> /var/log/pg-backup.log 2>&1"
+        state:  present
+
+    - name: Ensure cleanup cron job is present
+      cron:
+        name:   "engagehub postgres backup cleanup"
+        user:   root
+        hour:   "{{ backup_cron_hour }}"
+        minute: "30"
+        job:    "{{ cleanup_script_dest }} >> /var/log/pg-backup.log 2>&1"
         state:  present
 
     # ── 5. Summary ───────────────────────────────────────────────────────────
@@ -89,6 +108,7 @@
           - "  Backup deployment complete"
           - "  Backup script:  {{ backup_script_dest }}"
           - "  Restore script: {{ restore_script_dest }}"
+          - "  Cleanup script: {{ cleanup_script_dest }}"
           - "  Key file: {{ backup_env_file }} (root:root 600)"
           - "  Schedule: daily at {{ backup_cron_hour }}:{{ backup_cron_minute }}0 UTC"
           - "  Log: /var/log/pg-backup.log"

@@ -20,7 +20,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-ENV_FILE="/etc/ods/backup.env"
+VAULT_KEYS_FILE="/opt/engagehub/vault/keys/vault-init.json"
 BUCKET="ods-pg-backups"
 NAMESPACE="axnkbbvhdv9p"
 DB_CONTAINER="engagehub-postgres"
@@ -31,10 +31,10 @@ LOG_TAG="pg-restore"
 log()  { logger -t "$LOG_TAG" "$1"; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $1"; }
 fail() { log "ERROR: $1"; exit 1; }
 
-# ── Load Vault token and fetch encryption key ─────────────────────────────────
-[ -f "$ENV_FILE" ] || fail "$ENV_FILE not found. Cannot decrypt backup without the key."
-VAULT_TOKEN=$(grep -m1 '^VAULT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
-[ -n "$VAULT_TOKEN" ] || fail "VAULT_TOKEN is empty in $ENV_FILE"
+# ── Fetch encryption key from Vault ──────────────────────────────────────────
+[ -f "$VAULT_KEYS_FILE" ] || fail "$VAULT_KEYS_FILE not found."
+VAULT_TOKEN=$(python3 -c "import json; print(json.load(open('$VAULT_KEYS_FILE'))['root_token'])")
+[ -n "$VAULT_TOKEN" ] || fail "Could not read root token from $VAULT_KEYS_FILE"
 
 BACKUP_ENCRYPTION_KEY=$(docker exec \
   -e VAULT_TOKEN="$VAULT_TOKEN" \

@@ -22,7 +22,6 @@
     backup_script_dest: /usr/local/bin/pg-backup.sh
     restore_script_src:  "{{ playbook_dir }}/pg-restore.sh"
     restore_script_dest: /usr/local/bin/pg-restore.sh
-    backup_env_file:    /etc/ods/backup.env
     backup_cron_hour:   "2"
     backup_cron_minute: "0"
 
@@ -67,24 +66,7 @@
         group: root
         mode:  "0750"
 
-    # ── 3. Encryption key ────────────────────────────────────────────────────
-    - name: Ensure /etc/ods directory exists
-      file:
-        path:  /etc/ods
-        state: directory
-        owner: root
-        group: root
-        mode:  "0700"
-
-    - name: Write backup env file with Vault token
-      copy:
-        dest:    "{{ backup_env_file }}"
-        content: "VAULT_TOKEN={{ vault_token }}\n"
-        owner:   root
-        group:   root
-        mode:    "0600"
-
-    # ── 4. Cron job ──────────────────────────────────────────────────────────
+    # ── 3. Cron job ──────────────────────────────────────────────────────────
     - name: Ensure cron job is present
       cron:
         name:   "engagehub postgres daily backup"

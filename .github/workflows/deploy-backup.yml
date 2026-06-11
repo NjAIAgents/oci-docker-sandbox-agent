@@ -1,10 +1,6 @@
 name: Deploy Postgres Backup
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '03-backup/**'
   # schedule:
   #   - cron: '0 1 * * *'   # daily at 01:00 UTC — re-enable once VM_PUBLIC_IP and SSH_PRIVATE_KEY secrets are added
   workflow_dispatch:
@@ -19,9 +15,13 @@ jobs:
 
     steps:
 
-      # ── 1. Checkout ───────────────────────────────────────────────────────────
-      - name: Checkout repo
+      # ── 1. Checkout EngageHub (contains playbook + scripts) ───────────────────
+      - name: Checkout EngageHub repo
         uses: actions/checkout@v4.2.2
+        with:
+          repository: ToolTropolis/EngageHub
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: engagehub
 
       # ── 2. Install Ansible ────────────────────────────────────────────────────
       - name: Install Ansible
@@ -43,7 +43,7 @@ jobs:
         run: |
           cat > /tmp/inventory.ini <<EOF
           [ods_vm]
-          oci-vm ansible_host=$VM_PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/ods_key
+          oci-vm ansible_host=$VM_PUBLIC_IP ansible_user=ods ansible_ssh_private_key_file=~/.ssh/ods_key
           EOF
         env:
           VM_PUBLIC_IP: ${{ secrets.VM_PUBLIC_IP }}
@@ -53,6 +53,6 @@ jobs:
         run: |
           ansible-playbook \
             -i /tmp/inventory.ini \
-            03-backup/backup.yml
+            engagehub/ansible/backup.yml
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"

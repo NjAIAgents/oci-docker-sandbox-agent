@@ -1,0 +1,60 @@
+name: Deploy Postgres Backup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '03-backup/**'
+  schedule:
+    - cron: '0 1 * * *'   # daily at 01:00 UTC — drift correction before backup runs at 02:00
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy backup script + crontab to VM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4.2.2
+
+      # ── 2. Install Ansible ────────────────────────────────────────────────────
+      - name: Install Ansible
+        run: pip3 install --quiet ansible
+
+      # ── 3. Write SSH key ──────────────────────────────────────────────────────
+      - name: Write SSH private key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "$SSH_PRIVATE_KEY" > ~/.ssh/ods_key
+          chmod 600 ~/.ssh/ods_key
+          ssh-keyscan -H "$VM_PUBLIC_IP" >> ~/.ssh/known_hosts 2>/dev/null
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          VM_PUBLIC_IP:    ${{ secrets.VM_PUBLIC_IP }}
+
+      # ── 4. Write inventory ────────────────────────────────────────────────────
+      - name: Write Ansible inventory
+        run: |
+          cat > /tmp/inventory.ini <<EOF
+          [ods_vm]
+          oci-vm ansible_host=$VM_PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/ods_key
+          EOF
+        env:
+          VM_PUBLIC_IP: ${{ secrets.VM_PUBLIC_IP }}
+
+      # ── 5. Run playbook ───────────────────────────────────────────────────────
+      - name: Run backup playbook
+        run: |
+          ansible-playbook \
+            -i /tmp/inventory.ini \
+            --extra-vars "backup_encryption_key=${BACKUP_ENCRYPTION_KEY}" \
+            03-backup/backup.yml
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          ANSIBLE_HOST_KEY_CHECKING: "False"

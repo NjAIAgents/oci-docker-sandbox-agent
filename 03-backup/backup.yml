@@ -1,0 +1,101 @@
+---
+# 03-backup/backup.yml — Deploy encrypted Postgres backup script + crontab
+#
+# What this playbook does:
+#   1. Installs OCI CLI on the VM (if not present)
+#   2. Deploys /usr/local/bin/pg-backup.sh from repo
+#   3. Writes /etc/ods/backup.env with the encryption key (root:root 600)
+#   4. Ensures cron job runs daily at 02:00 UTC as root
+#
+# Idempotent — re-running corrects any drift from manual edits on the server.
+#
+# Secrets consumed (passed as extra-vars by the workflow):
+#   backup_encryption_key   — AES-256 passphrase for openssl enc
+
+- name: Deploy Postgres backup
+  hosts: ods_vm
+  become: true
+
+  vars:
+    backup_script_src:  "{{ playbook_dir }}/pg-backup.sh"
+    backup_script_dest: /usr/local/bin/pg-backup.sh
+    backup_env_file:    /etc/ods/backup.env
+    backup_cron_hour:   "2"
+    backup_cron_minute: "0"
+
+  tasks:
+
+    # ── 1. OCI CLI ───────────────────────────────────────────────────────────
+    - name: Check if OCI CLI is installed
+      command: oci --version
+      register: oci_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install OCI CLI
+      shell: |
+        curl -sL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh \
+          | bash -s -- --accept-all-defaults
+      when: oci_check.rc != 0
+      args:
+        executable: /bin/bash
+
+    - name: Symlink oci into /usr/local/bin
+      file:
+        src: /root/bin/oci
+        dest: /usr/local/bin/oci
+        state: link
+      when: oci_check.rc != 0
+
+    # ── 2. Backup script ─────────────────────────────────────────────────────
+    - name: Deploy backup script
+      copy:
+        src:   "{{ backup_script_src }}"
+        dest:  "{{ backup_script_dest }}"
+        owner: root
+        group: root
+        mode:  "0750"
+
+    # ── 3. Encryption key ────────────────────────────────────────────────────
+    - name: Ensure /etc/ods directory exists
+      file:
+        path:  /etc/ods
+        state: directory
+        owner: root
+        group: root
+        mode:  "0700"
+
+    - name: Write backup env file with encryption key
+      copy:
+        dest:    "{{ backup_env_file }}"
+        content: "BACKUP_ENCRYPTION_KEY={{ backup_encryption_key }}\n"
+        owner:   root
+        group:   root
+        mode:    "0600"
+
+    # ── 4. Cron job ──────────────────────────────────────────────────────────
+    - name: Ensure cron job is present
+      cron:
+        name:   "engagehub postgres daily backup"
+        user:   root
+        hour:   "{{ backup_cron_hour }}"
+        minute: "{{ backup_cron_minute }}"
+        job:    "{{ backup_script_dest }} >> /var/log/pg-backup.log 2>&1"
+        state:  present
+
+    # ── 5. Summary ───────────────────────────────────────────────────────────
+    - name: Verify cron entry
+      command: crontab -l -u root
+      register: cron_list
+      changed_when: false
+
+    - name: Print summary
+      debug:
+        msg:
+          - "================================================"
+          - "  Backup deployment complete"
+          - "  Script: {{ backup_script_dest }}"
+          - "  Key file: {{ backup_env_file }} (root:root 600)"
+          - "  Schedule: daily at {{ backup_cron_hour }}:{{ backup_cron_minute }}0 UTC"
+          - "  Log: /var/log/pg-backup.log"
+          - "================================================"

@@ -7,7 +7,7 @@ jobs:
   provision:
     name: Create ods-pg-backups bucket
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -49,7 +49,7 @@ jobs:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
           OCI_REGION:       ${{ secrets.OCI_REGION }}
 
-      # ── 4. Write tfvars ───────────────────────────────────────────────────────
+      # ── 5. Write tfvars ───────────────────────────────────────────────────────
       - name: Write tfvars
         run: |
           python3 -c "
@@ -68,39 +68,55 @@ jobs:
           OCI_NAMESPACE:      ${{ secrets.OCI_NAMESPACE }}
           NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
 
-      # ── 5. Terraform init ─────────────────────────────────────────────────────
+      # ── 6. Terraform init ─────────────────────────────────────────────────────
       - name: Terraform init
         run: terraform -chdir=01-provision/objectstorage init
 
-      # ── 6. Import bucket if it already exists (no remote state) ───────────────
-      - name: Import existing bucket if present
-        run: |
-          EXISTS=$(oci os bucket get \
-            --bucket-name ods-pg-backups \
-            --namespace "$OCI_NAMESPACE" \
-            --output json 2>/dev/null || echo "")
-
-          if [ -n "$EXISTS" ]; then
-            echo "Bucket already exists — importing into Terraform state..."
-            terraform -chdir=01-provision/objectstorage import \
-              -var "tenancy_ocid=$OCI_TENANCY_OCID" \
-              oci_objectstorage_bucket.pg_backups \
-              "n/${OCI_NAMESPACE}/b/ods-pg-backups"
-
-            # Lifecycle policy: OCI provider v5 import is broken for this resource.
-            # Delete it first so Terraform can recreate it cleanly (metadata only, no data loss).
-            oci os object-lifecycle-policy delete \
-              --bucket-name ods-pg-backups \
-              --namespace "$OCI_NAMESPACE" \
-              --force 2>/dev/null || true
-          else
-            echo "Bucket does not exist — Terraform will create it."
-          fi
+      # ── 7. Import existing resources into state ───────────────────────────────
+      - name: Import existing resources if present
         env:
-          OCI_NAMESPACE:    ${{ secrets.OCI_NAMESPACE }}
-          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_NAMESPACE:      ${{ secrets.OCI_NAMESPACE }}
+          OCI_TENANCY_OCID:   ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+        run: |
+          TF="terraform -chdir=01-provision/objectstorage"
 
-      # ── 7. Terraform apply ────────────────────────────────────────────────────
+          # --- Bucket ---
+          if oci os bucket get --bucket-name ods-pg-backups --namespace "$OCI_NAMESPACE" --output json 2>/dev/null; then
+            echo "Importing bucket..."
+            $TF import -var "tenancy_ocid=$OCI_TENANCY_OCID" \
+              oci_objectstorage_bucket.pg_backups "n/${OCI_NAMESPACE}/b/ods-pg-backups"
+
+            # Lifecycle policy: provider v5 import is broken, delete and let Terraform recreate
+            oci os object-lifecycle-policy delete \
+              --bucket-name ods-pg-backups --namespace "$OCI_NAMESPACE" --force 2>/dev/null || true
+          else
+            echo "Bucket not found — Terraform will create it."
+          fi
+
+          # --- ONS topic ---
+          TOPIC_ID=$(oci ons topic list --compartment-id "$OCI_COMPARTMENT_ID" --output json 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',[]); m=[t['topic-id'] for t in d if t.get('name')=='ods-pg-backup-alerts' and t.get('lifecycle-state')!='DELETED']; print(m[0] if m else '')")
+
+          if [ -n "$TOPIC_ID" ]; then
+            echo "Importing ONS topic $TOPIC_ID..."
+            $TF import -var "tenancy_ocid=$OCI_TENANCY_OCID" \
+              oci_ons_notification_topic.bucket_alerts "$TOPIC_ID"
+
+            # --- ONS subscription ---
+            SUB_ID=$(oci ons subscription list --compartment-id "$OCI_COMPARTMENT_ID" --topic-id "$TOPIC_ID" --output json 2>/dev/null \
+              | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',[]); m=[s['id'] for s in d if s.get('lifecycle-state')!='DELETED']; print(m[0] if m else '')")
+
+            if [ -n "$SUB_ID" ]; then
+              echo "Importing ONS subscription $SUB_ID..."
+              $TF import -var "tenancy_ocid=$OCI_TENANCY_OCID" \
+                oci_ons_subscription.bucket_alerts_email "$SUB_ID"
+            fi
+          else
+            echo "ONS topic not found — Terraform will create it."
+          fi
+
+      # ── 8. Terraform apply ────────────────────────────────────────────────────
       - name: Terraform apply
         run: |
           terraform -chdir=01-provision/objectstorage apply -auto-approve \
@@ -108,7 +124,7 @@ jobs:
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
 
-      # ── 8. Print outputs ──────────────────────────────────────────────────────
+      # ── 9. Print outputs ──────────────────────────────────────────────────────
       - name: Print outputs
         run: |
           echo "Bucket:    $(terraform -chdir=01-provision/objectstorage output -raw bucket_name)"

@@ -1,0 +1,75 @@
+name: Provision Object Storage (Postgres Backups)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  provision:
+    name: Create ods-pg-backups bucket
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4.2.2
+
+      # ── 2. Install Terraform ──────────────────────────────────────────────────
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3.1.2
+        with:
+          terraform_version: "~1.7"
+          terraform_wrapper: false
+
+      # ── 3. Configure OCI credentials ─────────────────────────────────────────
+      - name: Configure OCI credentials
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          printf '[DEFAULT]\nuser=%s\nfingerprint=%s\nkey_file=%s/.oci/oci_api_key.pem\ntenancy=%s\nregion=%s\n' \
+            "$OCI_USER_OCID" "$OCI_FINGERPRINT" "$HOME" "$OCI_TENANCY_OCID" "$OCI_REGION" \
+            > ~/.oci/config
+          chmod 600 ~/.oci/config
+        env:
+          OCI_PRIVATE_KEY:  ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_USER_OCID:    ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT:  ${{ secrets.OCI_FINGERPRINT }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_REGION:       ${{ secrets.OCI_REGION }}
+
+      # ── 4. Write tfvars ───────────────────────────────────────────────────────
+      - name: Write tfvars
+        run: |
+          python3 -c "
+          import os
+          open('01-provision/objectstorage/terraform.tfvars', 'w').write(
+            'compartment_id = \"' + os.environ['OCI_COMPARTMENT_ID'] + '\"\n' +
+            'region         = \"' + os.environ['OCI_REGION'] + '\"\n' +
+            'retention_days = 30\n'
+          )
+          "
+        env:
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+          OCI_REGION:         ${{ secrets.OCI_REGION }}
+
+      # ── 5. Terraform init + apply ─────────────────────────────────────────────
+      - name: Terraform init
+        run: terraform -chdir=01-provision/objectstorage init
+
+      - name: Terraform apply
+        run: |
+          terraform -chdir=01-provision/objectstorage apply -auto-approve \
+            -var "tenancy_ocid=$OCI_TENANCY_OCID"
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+
+      # ── 6. Print outputs ──────────────────────────────────────────────────────
+      - name: Print outputs
+        run: |
+          echo "Bucket:    $(terraform -chdir=01-provision/objectstorage output -raw bucket_name)"
+          echo "Namespace: $(terraform -chdir=01-provision/objectstorage output -raw namespace)"
+          echo "Dynamic group: $(terraform -chdir=01-provision/objectstorage output -raw dynamic_group_name)"

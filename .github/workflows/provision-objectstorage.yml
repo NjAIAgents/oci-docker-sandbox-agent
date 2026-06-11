@@ -86,6 +86,19 @@ jobs:
               -var "tenancy_ocid=$OCI_TENANCY_OCID" \
               oci_objectstorage_bucket.pg_backups \
               "n/${OCI_NAMESPACE}/b/ods-pg-backups"
+
+            # Also import lifecycle policy if it exists
+            LIFECYCLE=$(oci os object-lifecycle-policy get \
+              --bucket-name ods-pg-backups \
+              --namespace "$OCI_NAMESPACE" \
+              --output json 2>/dev/null || echo "")
+            if [ -n "$LIFECYCLE" ]; then
+              echo "Lifecycle policy already exists — importing..."
+              terraform -chdir=01-provision/objectstorage import \
+                -var "tenancy_ocid=$OCI_TENANCY_OCID" \
+                oci_objectstorage_object_lifecycle_policy.pg_backup_retention \
+                "n/${OCI_NAMESPACE}/b/ods-pg-backups"
+            fi
           else
             echo "Bucket does not exist — Terraform will create it."
           fi

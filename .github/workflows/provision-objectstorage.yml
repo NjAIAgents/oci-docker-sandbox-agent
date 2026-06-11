@@ -60,10 +60,32 @@ jobs:
           OCI_NAMESPACE:      ${{ secrets.OCI_NAMESPACE }}
           NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
 
-      # ── 5. Terraform init + apply ─────────────────────────────────────────────
+      # ── 5. Terraform init ─────────────────────────────────────────────────────
       - name: Terraform init
         run: terraform -chdir=01-provision/objectstorage init
 
+      # ── 6. Import bucket if it already exists (no remote state) ───────────────
+      - name: Import existing bucket if present
+        run: |
+          EXISTS=$(oci os bucket get \
+            --bucket-name ods-pg-backups \
+            --namespace "$OCI_NAMESPACE" \
+            --output json 2>/dev/null || echo "")
+
+          if [ -n "$EXISTS" ]; then
+            echo "Bucket already exists — importing into Terraform state..."
+            terraform -chdir=01-provision/objectstorage import \
+              -var "tenancy_ocid=$OCI_TENANCY_OCID" \
+              oci_objectstorage_bucket.pg_backups \
+              "n/${OCI_NAMESPACE}/b/ods-pg-backups"
+          else
+            echo "Bucket does not exist — Terraform will create it."
+          fi
+        env:
+          OCI_NAMESPACE:    ${{ secrets.OCI_NAMESPACE }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+
+      # ── 7. Terraform apply ────────────────────────────────────────────────────
       - name: Terraform apply
         run: |
           terraform -chdir=01-provision/objectstorage apply -auto-approve \
@@ -71,7 +93,7 @@ jobs:
         env:
           OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
 
-      # ── 6. Print outputs ──────────────────────────────────────────────────────
+      # ── 8. Print outputs ──────────────────────────────────────────────────────
       - name: Print outputs
         run: |
           echo "Bucket:    $(terraform -chdir=01-provision/objectstorage output -raw bucket_name)"

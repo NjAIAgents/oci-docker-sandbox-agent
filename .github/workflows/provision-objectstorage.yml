@@ -74,4 +74,3 @@ jobs:
         run: |
           echo "Bucket:    $(terraform -chdir=01-provision/objectstorage output -raw bucket_name)"
           echo "Namespace: $(terraform -chdir=01-provision/objectstorage output -raw namespace)"
-          echo "Dynamic group: $(terraform -chdir=01-provision/objectstorage output -raw dynamic_group_name)"
